@@ -42,6 +42,10 @@ class ZipImageExtractor(tk.Tk):
         self.zip_listbox = tk.Listbox(self.zip_frame)
         self.zip_listbox.pack(fill=tk.BOTH, expand=True)
         
+        # New status box to display file counts and an example excluded filename
+        self.status_label = ttk.Label(self.zip_frame, text="Status: ")
+        self.status_label.pack(anchor=tk.W, pady=5)
+        
         # Bottom frame: controls (min size, load, extract)
         self.control_frame = ttk.Frame(self)
         self.control_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=10)
@@ -102,6 +106,7 @@ class ZipImageExtractor(tk.Tk):
                     self.refresh_directory()
                     self.zip_listbox.delete(0, tk.END)
                     self.selected_zip = None
+                    self.status_label.config(text="Status: ")
         elif item_text.startswith("[ZIP]"):
             # Select the zip file and load its contents.
             zip_name = item_text.replace("[ZIP] ", "", 1)
@@ -117,9 +122,11 @@ class ZipImageExtractor(tk.Tk):
             self.refresh_directory()
             self.zip_listbox.delete(0, tk.END)
             self.selected_zip = None
+            self.status_label.config(text="Status: ")
     
     def load_zip_contents(self):
-        """Load and display image files (above a minimum size) from the selected zip."""
+        """Load and display image files (above a minimum size) from the selected zip,
+           and update status with counts of found and excluded files."""
         try:
             min_size = int(self.size_entry.get())
         except ValueError:
@@ -143,15 +150,29 @@ class ZipImageExtractor(tk.Tk):
         self.zip_listbox.delete(0, tk.END)
         self.filtered_images = []
         
+        total_images = 0
+        excluded_images = 0
+        excluded_example = ""
+        
         try:
             with zipfile.ZipFile(self.selected_zip, 'r') as zf:
                 for info in zf.infolist():
                     filename = info.filename
                     if any(filename.lower().endswith(ext) for ext in IMAGE_EXTENSIONS):
+                        total_images += 1
                         if info.file_size >= min_size:
                             self.filtered_images.append(info)
                             display_text = f"{filename} ({info.file_size} bytes)"
                             self.zip_listbox.insert(tk.END, display_text)
+                        else:
+                            excluded_images += 1
+                            if not excluded_example:
+                                excluded_example = filename
+            # Update status label.
+            status_msg = (f"Found {total_images} image file(s); "
+                          f"Excluded by file size: {excluded_images}; "
+                          f"Example excluded file: {excluded_example if excluded_example else 'None'}")
+            self.status_label.config(text=status_msg)
         except Exception as e:
             messagebox.showerror("Error", f"Failed to read zip file: {str(e)}")
     
