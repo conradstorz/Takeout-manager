@@ -6,14 +6,19 @@ import zipfile
 # Define the image file extensions we want to consider.
 IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff']
 
+def bytes_to_mb(num_bytes):
+    """Convert bytes to megabytes with two decimal precision."""
+    return num_bytes / (1024 * 1024)
+
 class ZipImageExtractor(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Zip Image Extractor")
-        self.geometry("800x600")
+        # Expanded window: 1200 pixels wide.
+        self.geometry("1200x600")
         self.current_dir = os.getcwd()  # start in the working directory
         self.selected_zip = None
-        self.filtered_images = []  # list of ZipInfo objects for images
+        self.filtered_images = []  # list of ZipInfo objects for images (passing min size)
 
         # --- Layout Setup ---
         # Left frame: directory navigation
@@ -32,7 +37,7 @@ class ZipImageExtractor(tk.Tk):
         self.up_button = ttk.Button(self.dir_frame, text="Up", command=self.go_up)
         self.up_button.pack(pady=5)
         
-        # Top-right frame: zip file contents
+        # Top-right frame: zip file contents and statistics
         self.zip_frame = ttk.Frame(self)
         self.zip_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=10)
         
@@ -42,15 +47,20 @@ class ZipImageExtractor(tk.Tk):
         self.zip_listbox = tk.Listbox(self.zip_frame)
         self.zip_listbox.pack(fill=tk.BOTH, expand=True)
         
-        # New status box to display file counts and an example excluded filename
+        # Status label for overall zip statistics and filtering details
         self.status_label = ttk.Label(self.zip_frame, text="Status: ")
         self.status_label.pack(anchor=tk.W, pady=5)
+        
+        # Progress bar for extraction progress
+        self.progress = ttk.Progressbar(self.zip_frame, orient='horizontal', mode='determinate')
+        self.progress.pack(fill=tk.X, pady=(0, 10))
         
         # Bottom frame: controls (min size, load, extract)
         self.control_frame = ttk.Frame(self)
         self.control_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=10)
         
-        self.size_label = ttk.Label(self.control_frame, text="Minimum file size (bytes):")
+        self.size_label = ttk.Label(self.control_frame, 
+            text="Minimum file size (bytes) [change value and click 'Load Zip' to update]:")
         self.size_label.pack(side=tk.LEFT)
         self.size_entry = ttk.Entry(self.control_frame, width=10)
         self.size_entry.insert(0, "0")
@@ -93,11 +103,9 @@ class ZipImageExtractor(tk.Tk):
             return
         item_text = self.dir_listbox.get(selection[0])
         if item_text.startswith("[DIR]"):
-            # If the item is the parent directory (..), go up.
             if item_text == "[DIR] ..":
                 self.go_up()
             else:
-                # Navigate into the selected directory.
                 dir_name = item_text.replace("[DIR] ", "", 1)
                 new_path = os.path.join(self.current_dir, dir_name)
                 if os.path.isdir(new_path):
@@ -108,7 +116,6 @@ class ZipImageExtractor(tk.Tk):
                     self.selected_zip = None
                     self.status_label.config(text="Status: ")
         elif item_text.startswith("[ZIP]"):
-            # Select the zip file and load its contents.
             zip_name = item_text.replace("[ZIP] ", "", 1)
             self.selected_zip = os.path.join(self.current_dir, zip_name)
             self.load_zip_contents()
@@ -126,14 +133,13 @@ class ZipImageExtractor(tk.Tk):
     
     def load_zip_contents(self):
         """Load and display image files (above a minimum size) from the selected zip,
-           and update status with counts of found and excluded files."""
+           and update the status with detailed zip statistics."""
         try:
             min_size = int(self.size_entry.get())
         except ValueError:
             messagebox.showerror("Error", "Minimum file size must be an integer.")
             return
         
-        # If no zip file is already selected, try to select one from the list.
         if not self.selected_zip:
             selection = self.dir_listbox.curselection()
             if selection:
@@ -149,35 +155,71 @@ class ZipImageExtractor(tk.Tk):
         # Clear previous zip contents.
         self.zip_listbox.delete(0, tk.END)
         self.filtered_images = []
+        self.progress['value'] = 0
         
-        total_images = 0
-        excluded_images = 0
+        # Initialize counters for overall zip statistics.
+        dir_count = 0
+        file_count = 0
+        total_comp_all = 0
+        total_exp_all = 0
+        
+        # Statistics for image files.
+        image_count = 0
+        total_comp_img = 0
+        total_exp_img = 0
+        
+        # For filtering statistics.
+        excluded_count = 0
         excluded_example = ""
         
         try:
             with zipfile.ZipFile(self.selected_zip, 'r') as zf:
                 for info in zf.infolist():
-                    filename = info.filename
-                    if any(filename.lower().endswith(ext) for ext in IMAGE_EXTENSIONS):
-                        total_images += 1
-                        if info.file_size >= min_size:
-                            self.filtered_images.append(info)
-                            display_text = f"{filename} ({info.file_size} bytes)"
-                            self.zip_listbox.insert(tk.END, display_text)
-                        else:
-                            excluded_images += 1
-                            if not excluded_example:
-                                excluded_example = filename
-            # Update status label.
-            status_msg = (f"Found {total_images} image file(s); "
-                          f"Excluded by file size: {excluded_images}; "
-                          f"Example excluded file: {excluded_example if excluded_example else 'None'}")
-            self.status_label.config(text=status_msg)
+                    if info.is_dir():
+                        dir_count += 1
+                    else:
+                        file_count += 1
+                        total_comp_all += info.compress_size
+                        total_exp_all += info.file_size
+                        # Check if this is an image file.
+                        if any(info.filename.lower().endswith(ext) for ext in IMAGE_EXTENSIONS):
+                            image_count += 1
+                            total_comp_img += info.compress_size
+                            total_exp_img += info.file_size
+                            # Filtering based on minimum file size.
+                            if info.file_size >= min_size:
+                                self.filtered_images.append(info)
+                                display_text = f"{info.filename} ({info.file_size} bytes)"
+                                self.zip_listbox.insert(tk.END, display_text)
+                            else:
+                                excluded_count += 1
+                                if not excluded_example:
+                                    # Display only the filename (not the entire path)
+                                    excluded_example = os.path.basename(info.filename)
+            
+            # Convert sizes to MB.
+            total_comp_all_mb = bytes_to_mb(total_comp_all)
+            total_exp_all_mb = bytes_to_mb(total_exp_all)
+            total_comp_img_mb = bytes_to_mb(total_comp_img)
+            total_exp_img_mb = bytes_to_mb(total_exp_img)
+            
+            # Build the statistics message.
+            stats_msg = "Zip File Statistics:\n"
+            stats_msg += f"  Directories: {dir_count}\n"
+            stats_msg += (f"  Files: {file_count} (Compressed: {total_comp_all_mb:.2f} MB, "
+                          f"Expanded: {total_exp_all_mb:.2f} MB)\n")
+            stats_msg += (f"  Image Files: {image_count} (Compressed: {total_comp_img_mb:.2f} MB, "
+                          f"Expanded: {total_exp_img_mb:.2f} MB)\n\n")
+            stats_msg += f"Image Filtering (Minimum size: {min_size} bytes):\n"
+            stats_msg += f"  Included: {len(self.filtered_images)} image file(s)\n"
+            stats_msg += f"  Excluded: {excluded_count} image file(s); Example excluded: {excluded_example if excluded_example else 'None'}"
+            self.status_label.config(text=stats_msg)
         except Exception as e:
             messagebox.showerror("Error", f"Failed to read zip file: {str(e)}")
     
     def extract_images(self):
-        """Extract the filtered image files from the selected zip into a new subdirectory."""
+        """Extract the filtered image files from the selected zip into a new subdirectory,
+           with a progress indication."""
         if not self.selected_zip:
             messagebox.showinfo("Info", "Please select a zip file and load its contents first.")
             return
@@ -185,20 +227,27 @@ class ZipImageExtractor(tk.Tk):
             messagebox.showinfo("Info", "No images found matching the criteria.")
             return
         
-        # Build extraction directory name: 'photos_' prepended to the zip base name (without extension)
         zip_basename = os.path.basename(self.selected_zip)
         name_without_ext = os.path.splitext(zip_basename)[0]
         extract_dir = os.path.join(os.getcwd(), f"photos_{name_without_ext}")
         os.makedirs(extract_dir, exist_ok=True)
         
+        self.extract_button.config(state=tk.DISABLED)
+        self.progress.config(maximum=len(self.filtered_images))
+        self.progress['value'] = 0
+        
         try:
             with zipfile.ZipFile(self.selected_zip, 'r') as zf:
-                for info in self.filtered_images:
-                    # Extract each image file, preserving its internal path structure.
+                for idx, info in enumerate(self.filtered_images, start=1):
                     zf.extract(info, path=extract_dir)
+                    self.progress['value'] = idx
+                    self.update_idletasks()
             messagebox.showinfo("Success", f"Extracted {len(self.filtered_images)} images to:\n{extract_dir}")
         except Exception as e:
             messagebox.showerror("Error", f"Extraction failed: {str(e)}")
+        finally:
+            self.extract_button.config(state=tk.NORMAL)
+            self.progress['value'] = 0
 
 if __name__ == "__main__":
     app = ZipImageExtractor()
