@@ -1,4 +1,5 @@
 import os
+import time
 import tkinter as tk
 from tkinter import ttk, messagebox
 import zipfile
@@ -9,6 +10,52 @@ IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff']
 def bytes_to_mb(num_bytes):
     """Convert bytes to megabytes with two decimal precision."""
     return num_bytes / (1024 * 1024)
+
+def set_file_times(filename, timestamp):
+    """
+    Set the modification and access times using os.utime.
+    On Windows, also attempt to set the creation time using Windows API.
+    """
+    # Set modification and access times (portable)
+    os.utime(filename, (timestamp, timestamp))
+    
+    if os.name == 'nt':
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+
+            FILE_WRITE_ATTRIBUTES = 0x0100
+            OPEN_EXISTING = 3
+            FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+
+            # Open the file with write attributes
+            handle = kernel32.CreateFileW(
+                filename,
+                FILE_WRITE_ATTRIBUTES,
+                0,
+                None,
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS,
+                None
+            )
+            if handle == wintypes.HANDLE(-1).value:
+                return
+            
+            # Convert Python timestamp (seconds since epoch) to Windows FILETIME.
+            # Windows FILETIME is in 100-nanosecond intervals since January 1, 1601.
+            ft = int((timestamp + 11644473600) * 10000000)
+            low = ft & 0xFFFFFFFF
+            high = ft >> 32
+            filetime = wintypes.FILETIME(low, high)
+            
+            # Set creation, access, and modification times to the same value.
+            kernel32.SetFileTime(handle, ctypes.byref(filetime), ctypes.byref(filetime), ctypes.byref(filetime))
+            kernel32.CloseHandle(handle)
+        except Exception:
+            # If setting creation time fails, do nothing.
+            pass
 
 class ZipImageExtractor(tk.Tk):
     def __init__(self):
@@ -194,7 +241,7 @@ class ZipImageExtractor(tk.Tk):
                             else:
                                 excluded_count += 1
                                 if not excluded_example:
-                                    # Display only the filename (not the entire path)
+                                    # Show only the basename, not the full path
                                     excluded_example = os.path.basename(info.filename)
             
             # Convert sizes to MB.
@@ -219,7 +266,7 @@ class ZipImageExtractor(tk.Tk):
     
     def extract_images(self):
         """Extract the filtered image files from the selected zip into a new subdirectory,
-           with a progress indication."""
+           with a progress indication, and preserve file timestamps."""
         if not self.selected_zip:
             messagebox.showinfo("Info", "Please select a zip file and load its contents first.")
             return
@@ -239,7 +286,12 @@ class ZipImageExtractor(tk.Tk):
         try:
             with zipfile.ZipFile(self.selected_zip, 'r') as zf:
                 for idx, info in enumerate(self.filtered_images, start=1):
-                    zf.extract(info, path=extract_dir)
+                    extracted_path = zf.extract(info, path=extract_dir)
+                    # Convert the zip file's stored date_time to a timestamp.
+                    mod_time = time.mktime(info.date_time + (0, 0, -1))
+                    # Set modification, access, and (on Windows) creation times.
+                    set_file_times(extracted_path, mod_time)
+                    
                     self.progress['value'] = idx
                     self.update_idletasks()
             messagebox.showinfo("Success", f"Extracted {len(self.filtered_images)} images to:\n{extract_dir}")
